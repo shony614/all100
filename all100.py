@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import hmac
 import math
+import unicodedata
 
 import gspread
 import streamlit as st
@@ -137,6 +138,22 @@ def connect_spreadsheet():
         ) from exc
 
 
+def normalize_header(value):
+    """눈에 보이지 않는 공백·유니코드 차이 때문에 제목 검사가 실패하지 않게 정리합니다."""
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    # 복사/붙여넣기 과정에서 섞일 수 있는 BOM 및 zero-width 문자 제거
+    for invisible in ("\ufeff", "\u200b", "\u200c", "\u200d", "\u2060"):
+        text = text.replace(invisible, "")
+    # 제목 안의 공백 종류나 개수가 달라도 같은 제목으로 인식
+    return "".join(text.split())
+
+
+def history_headers_match(row):
+    actual = [normalize_header(cell) for cell in row[: len(HISTORY_HEADERS)]]
+    expected = [normalize_header(cell) for cell in HISTORY_HEADERS]
+    return actual == expected
+
+
 def get_history_worksheet(spreadsheet):
     """차감 내역을 저장할 History 탭을 찾고, 없으면 자동으로 만듭니다."""
     try:
@@ -159,10 +176,13 @@ def get_history_worksheet(spreadsheet):
             range_name="A1",
             value_input_option="RAW",
         )
-    elif current_values[0][: len(HISTORY_HEADERS)] != HISTORY_HEADERS:
+    elif not history_headers_match(current_values[0]):
+        actual_headers = current_values[0][: len(HISTORY_HEADERS)]
         raise RuntimeError(
-            "구글 시트의 History 탭 첫 번째 줄이 앱의 기록 형식과 다릅니다. "
-            "첫 번째 줄을 수정하지 않았는지 확인해 주세요."
+            "구글 시트 History 탭의 첫 번째 행을 앱이 예상한 제목으로 읽지 못했습니다. "
+            f"현재 읽힌 제목: {actual_headers!r}. "
+            f"필요한 제목: {HISTORY_HEADERS!r}. "
+            "첫 번째 행과 연결된 스프레드시트의 History 탭을 확인해 주세요."
         )
 
     return worksheet
@@ -174,8 +194,12 @@ def read_history(worksheet):
     if not values:
         return []
 
-    if values[0][: len(HISTORY_HEADERS)] != HISTORY_HEADERS:
-        raise RuntimeError("History 탭의 제목 행을 찾을 수 없습니다.")
+    if not history_headers_match(values[0]):
+        actual_headers = values[0][: len(HISTORY_HEADERS)]
+        raise RuntimeError(
+            "History 탭의 제목 행을 찾을 수 없습니다. "
+            f"현재 읽힌 제목: {actual_headers!r}."
+        )
 
     history = []
     for row_number, row in enumerate(values[1:], start=2):
